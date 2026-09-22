@@ -1,4 +1,4 @@
-import { apiError, ensureSeed, getD1, isAdmin, sha256 } from "@/lib/raffle-db";
+import { apiError, ensureSeed, generateRecoveryCode, getD1, isAdmin, redactAuditPayload, sha256 } from "@/lib/raffle-db";
 
 const COLOR = /^#[0-9a-fA-F]{6}$/;
 const FONTS = new Set(["Trebuchet MS", "Arial", "Georgia", "Verdana", "Comic Sans MS"]);
@@ -22,8 +22,8 @@ export async function GET(request: Request) {
       db.prepare("SELECT n.*,s.child_name AS seller_name FROM raffle_numbers n LEFT JOIN sellers s ON s.id=n.seller_id WHERE n.active=1 ORDER BY n.number").all(),
       db.prepare("SELECT * FROM audit_log ORDER BY id DESC LIMIT 60").all(),
     ]);
-    const { admin_pin_hash: _pin, ...safeSettings } = settings;
-    return Response.json({ settings: safeSettings, prizes: prizes.results, sellers: sellers.results, numbers: numbers.results, audit: audit.results });
+    const { admin_pin_hash: _pin, admin_recovery_code_hash: recoveryHash, ...safeSettings } = settings;
+    return Response.json({ settings: { ...safeSettings, admin_recovery_code_set: Boolean(recoveryHash) }, prizes: prizes.results, sellers: sellers.results, numbers: numbers.results, audit: audit.results });
   } catch (error) {
     if (error instanceof Error && error.message === "ADMIN_REQUIRED") return apiError(new Error("Necesitás ingresar como administrador."), 403);
     return apiError(error);
@@ -43,10 +43,6 @@ export async function POST(request: Request) {
       const count = Math.max(10, Math.min(10000, Number(data.number_count) || 100));
       await db.prepare("UPDATE raffle_settings SET title=?,school=?,price_cents=?,number_count=?,draw_date=?,draw_name=?,official_url=?,result_number=?,whatsapp_text=?,admin_emails=?,updated_at=? WHERE id=1")
         .bind(String(data.title ?? "Rifa"), String(data.school ?? ""), Math.max(0, Number(data.price_cents) || 0), count, data.draw_date ? String(data.draw_date) : null, String(data.draw_name ?? ""), String(data.official_url ?? ""), data.result_number ? String(data.result_number) : null, String(data.whatsapp_text ?? ""), String(data.admin_emails ?? ""), now).run();
-      if (String(data.new_admin_pin ?? "").trim()) {
-        if (String(data.new_admin_pin).trim().length < 8) return apiError(new Error("La clave administradora debe tener al menos 8 caracteres."), 400);
-        await db.prepare("UPDATE raffle_settings SET admin_pin_hash=? WHERE id=1").bind(await sha256(String(data.new_admin_pin).trim())).run();
-      }
       const existing = await db.prepare("SELECT number FROM raffle_numbers ORDER BY number").all<{ number: number }>();
       const known = new Set(existing.results.map((row) => row.number));
       const changes = [];
@@ -115,6 +111,17 @@ export async function POST(request: Request) {
         .bind(String(s.title), String(s.school), Number(s.price_cents), Number(s.number_count), s.draw_date ? String(s.draw_date) : null, String(s.draw_name), String(s.official_url), s.result_number ? String(s.result_number) : null, String(s.whatsapp_text), String(s.admin_emails), now).run();
       await db.prepare("DELETE FROM prizes").run();
       if (data.prizes.length) await db.batch(data.prizes.map((p, index) => db.prepare("INSERT INTO prizes (position,title,description,image_url) VALUES (?,?,?,?)").bind(Number(p.position) || index + 1, String(p.title), String(p.description ?? ""), String(p.image_url ?? ""))));
+    } else if (action === "admin_pin") {
+      const data = body.data as Record<string, unknown>;
+      const newPin = String(data.new_admin_pin ?? "").trim();
+      if (newPin.length < 8) return apiError(new Error("La clave administradora debe tener al menos 8 caracteres."), 400);
+      await db.prepare("UPDATE raffle_settings SET admin_pin_hash=? WHERE id=1").bind(await sha256(newPin)).run();
+    } else if (action === "generate_recovery_code") {
+      const code = generateRecoveryCode();
+      await db.prepare("UPDATE raffle_settings SET admin_recovery_code_hash=? WHERE id=1").bind(await sha256(code)).run();
+      await db.prepare("INSERT INTO audit_log (action,actor,payload,created_at) VALUES (?,?,?,?)")
+        .bind("admin_generate_recovery_code", admin.email, JSON.stringify({}), now).run();
+      return Response.json({ ok: true, code });
     } else if (action === "reset") {
       const mode = String((body.data as Record<string, unknown>)?.mode ?? "sales");
       await db.prepare("UPDATE raffle_numbers SET status='available',seller_id=NULL,buyer_name=NULL,buyer_phone=NULL,notes=NULL,updated_at=?").bind(now).run();
@@ -131,7 +138,7 @@ export async function POST(request: Request) {
     }
 
     await db.prepare("INSERT INTO audit_log (action,actor,payload,created_at) VALUES (?,?,?,?)")
-      .bind(`admin_${action}`, admin.email, JSON.stringify(body.data ?? {}), now).run();
+      .bind(`admin_${action}`, admin.email, JSON.stringify(redactAuditPayload(body.data ?? {})), now).run();
     return Response.json({ ok: true });
   } catch (error) {
     if (error instanceof Error && error.message === "ADMIN_REQUIRED") return apiError(new Error("Necesitás ingresar como administrador."), 403);

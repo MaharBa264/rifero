@@ -3,11 +3,20 @@ import { env } from "cloudflare:workers";
 export type RaffleSettings = {
   id: number; title: string; school: string; price_cents: number; number_count: number;
   draw_date: string | null; draw_name: string; official_url: string; result_number: string | null;
-  whatsapp_text: string; admin_emails: string; admin_pin_hash: string; updated_at: string;
+  whatsapp_text: string; admin_emails: string; admin_pin_hash: string; admin_recovery_code_hash: string | null; updated_at: string;
   hero_title: string; hero_intro: string; logo_image_url: string; hero_image_url: string;
   font_family: string; primary_color: string; secondary_color: string; accent_color: string;
   background_color: string; text_color: string;
 };
+
+const SENSITIVE_AUDIT_KEYS = new Set(["new_admin_pin", "pin", "new_recovery_code", "recovery_code", "code"]);
+export function redactAuditPayload(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactAuditPayload);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, v]) => [key, SENSITIVE_AUDIT_KEYS.has(key) ? "[oculto]" : redactAuditPayload(v)]));
+  }
+  return value;
+}
 
 export function getD1() {
   if (!env.DB) throw new Error("La base de datos no está disponible.");
@@ -26,7 +35,7 @@ export async function ensureSeed() {
   if (!settings) {
     await db.batch([
       db.prepare("INSERT INTO raffle_settings (id,title,school,price_cents,number_count,draw_date,draw_name,official_url,result_number,whatsapp_text,admin_emails,admin_pin_hash,updated_at) VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?)")
-        .bind("La gran rifa de 6.º", "6.º grado", 300000, 100, null, "Lotería de la Ciudad — Quiniela", "https://www.loteriadelaciudad.gob.ar/", null, "¡Gracias por colaborar con nuestra rifa!", "", "3f2dc0ae5ada1a6863993b399a2675f5420f790061db0a3a44e0aca540e892cc", now),
+        .bind("La gran rifa de 6.º", "6.º grado", 300000, 100, null, "Lotería de la Ciudad — Quiniela", "https://www.loteriadelaciudad.gob.ar/", null, "¡Gracias por colaborar con nuestra rifa!", "", await sha256("admin1234"), now),
       db.prepare("INSERT INTO prizes (position,title,description,image_url) VALUES (1,?,?,?)").bind("Premio sorpresa", "Próximamente anunciaremos este premio.", ""),
       db.prepare("INSERT INTO prizes (position,title,description,image_url) VALUES (2,?,?,?)").bind("Segundo premio", "Otro motivo para elegir tu número favorito.", ""),
       db.prepare("INSERT INTO sellers (child_name,display_name,pin_hash,active,created_at) VALUES (?,?,?,?,?)")
@@ -38,7 +47,7 @@ export async function ensureSeed() {
   const current = settings ?? (await db.prepare("SELECT * FROM raffle_settings WHERE id = 1").first<RaffleSettings>());
   if (!current) throw new Error("No se pudo iniciar la rifa.");
   if (!current.admin_pin_hash) {
-    current.admin_pin_hash = "3f2dc0ae5ada1a6863993b399a2675f5420f790061db0a3a44e0aca540e892cc";
+    current.admin_pin_hash = await sha256("admin1234");
     await db.prepare("UPDATE raffle_settings SET admin_pin_hash=? WHERE id=1").bind(current.admin_pin_hash).run();
   }
   const count = await db.prepare("SELECT COUNT(*) AS total FROM raffle_numbers").first<{ total: number }>();
@@ -59,7 +68,7 @@ export async function getPublicData() {
     db.prepare("SELECT number,status FROM raffle_numbers WHERE active = 1 ORDER BY number").all(),
     db.prepare("SELECT COUNT(*) AS total FROM sellers WHERE active = 1").first<{ total: number }>(),
   ]);
-  const { admin_emails: _emails, admin_pin_hash: _pin, ...publicSettings } = settings;
+  const { admin_emails: _emails, admin_pin_hash: _pin, admin_recovery_code_hash: _recovery, ...publicSettings } = settings;
   return { settings: publicSettings, prizes: prizes.results, numbers: numbers.results, sellerCount: sellerCount?.total ?? 0 };
 }
 
@@ -74,6 +83,13 @@ export async function isAdmin(request: Request) {
   const settings = await ensureSeed();
   const key = request.headers.get("x-rifa-admin-key") ?? "";
   return { ok: Boolean(key && (await sha256(key)) === settings.admin_pin_hash), email: "administrador" };
+}
+
+const RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+export function generateRecoveryCode() {
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  const chars = Array.from(bytes, (b) => RECOVERY_ALPHABET[b % RECOVERY_ALPHABET.length]);
+  return `${chars.slice(0, 4).join("")}-${chars.slice(4, 8).join("")}-${chars.slice(8, 12).join("")}`;
 }
 
 export function apiError(error: unknown, status = 500) {

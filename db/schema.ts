@@ -13,6 +13,7 @@ export const raffleSettings = sqliteTable("raffle_settings", {
   whatsappText: text("whatsapp_text").notNull().default("¡Gracias por colaborar con nuestra rifa!"),
   adminEmails: text("admin_emails").notNull().default("maharba264@gmail.com"),
   adminPinHash: text("admin_pin_hash").notNull().default(""),
+  adminRecoveryCodeHash: text("admin_recovery_code_hash"),
   heroTitle: text("hero_title").notNull().default("Ayudanos a hacer algo enorme."),
   heroIntro: text("hero_intro").notNull().default("Cada número suma. Elegí el tuyo con una familia vendedora y guardá el comprobante para el sorteo."),
   logoImageUrl: text("logo_image_url").notNull().default(""),

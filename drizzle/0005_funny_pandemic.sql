@@ -1,0 +1,1 @@
+ALTER TABLE `raffle_settings` ADD `admin_recovery_code_hash` text;

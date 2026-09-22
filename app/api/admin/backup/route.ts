@@ -26,7 +26,7 @@ export async function GET(request: Request) {
       });
       return new Response([header.join(","), ...rows].join("\n"), { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename=rifa-${stamp}.csv` } });
     }
-    const { admin_pin_hash: _pin, ...safeSettings } = settings;
+    const { admin_pin_hash: _pin, admin_recovery_code_hash: _recovery, ...safeSettings } = settings;
     const payload = { version: 2, exportedAt: new Date().toISOString(), settings: safeSettings, prizes: prizes.results, sellers: sellers.results, numbers: numbers.results, audit: audit.results };
     return new Response(JSON.stringify(payload, null, 2), { headers: { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename=rifa-${stamp}.json` } });
   } catch (error) { return apiError(error); }
