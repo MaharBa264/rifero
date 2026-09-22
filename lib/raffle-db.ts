@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 
 export type RaffleSettings = {
-  id: number; title: string; school: string; price_cents: number; promo_pair_price_cents: number | null; max_reserved_per_seller: number | null; number_count: number;
+  id: number; title: string; school: string; price_cents: number; promo_pair_price_cents: number | null; max_reserved_per_seller: number | null; start_number: number; number_count: number;
   draw_date: string | null; draw_name: string; official_url: string; result_number: string | null;
   whatsapp_text: string; admin_emails: string; admin_pin_hash: string; admin_recovery_code_hash: string | null; updated_at: string;
   hero_title: string; hero_intro: string; logo_image_url: string; hero_image_url: string;
@@ -52,7 +52,7 @@ export async function ensureSeed() {
   }
   const count = await db.prepare("SELECT COUNT(*) AS total FROM raffle_numbers").first<{ total: number }>();
   if (!count?.total) {
-    const statements = Array.from({ length: current.number_count }, (_, number) =>
+    const statements = Array.from({ length: current.number_count }, (_, i) => current.start_number + i).map((number) =>
       db.prepare("INSERT INTO raffle_numbers (number,status,active,updated_at) VALUES (?,'available',1,?)").bind(number, now),
     );
     for (let i = 0; i < statements.length; i += 50) await db.batch(statements.slice(i, i + 50));

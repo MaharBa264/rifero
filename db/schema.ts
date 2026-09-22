@@ -7,6 +7,7 @@ export const raffleSettings = sqliteTable("raffle_settings", {
   priceCents: integer("price_cents").notNull().default(300000),
   promoPairPriceCents: integer("promo_pair_price_cents"),
   maxReservedPerSeller: integer("max_reserved_per_seller"),
+  startNumber: integer("start_number").notNull().default(0),
   numberCount: integer("number_count").notNull().default(100),
   drawDate: text("draw_date"),
   drawName: text("draw_name").notNull().default("Lotería de la Ciudad — Quiniela"),

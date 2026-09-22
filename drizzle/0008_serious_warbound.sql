@@ -1,0 +1,1 @@
+ALTER TABLE `raffle_settings` ADD `start_number` integer DEFAULT 0 NOT NULL;

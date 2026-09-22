@@ -57,6 +57,13 @@
       "when": 1790098571512,
       "tag": "0007_mature_komodo",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1790100784300,
+      "tag": "0008_serious_warbound",
+      "breakpoints": true
     }
   ]
 }

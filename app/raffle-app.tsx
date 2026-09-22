@@ -51,7 +51,7 @@ export function RaffleApp() {
   const visibleNumbers = useMemo(() => (data?.numbers ?? []).filter((item) => (filter === "all" || item.status === filter) && (!search || String(item.number).padStart(2, "0").includes(search.trim()))), [data, filter, search]);
   const sold = data?.numbers.filter((n) => n.status === "sold").length ?? 0;
   const reserved = data?.numbers.filter((n) => n.status === "reserved").length ?? 0;
-  const taken = sold + reserved; const total = data?.numbers.length ?? 0; const digits = Math.max(2, String(Math.max(0, total - 1)).length);
+  const taken = sold + reserved; const total = data?.numbers.length ?? 0; const digits = Math.max(2, ...(data?.numbers.map((n) => String(n.number).length) ?? [2]));
   const canChoose = (item: NumberRow) => {
     if (!seller || item.status !== "available") return false;
     if (seller.limitMode === "range") return seller.limitFrom !== null && seller.limitTo !== null && item.number >= seller.limitFrom && item.number <= seller.limitTo;
