@@ -13,7 +13,8 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "db:deploy": "wrangler d1 migrations apply site-creator-d1 --remote --config wrangler.d1.jsonc",
-    "db:deploy:local": "wrangler d1 migrations apply site-creator-d1 --local --config wrangler.d1.jsonc"
+    "db:deploy:local": "wrangler d1 migrations apply site-creator-d1 --local --config wrangler.d1.jsonc",
+    "deploy": "pnpm db:deploy && wrangler deploy"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
