@@ -1,0 +1,1 @@
+ALTER TABLE `raffle_settings` ADD `admin_pin_hash` text DEFAULT '' NOT NULL;
