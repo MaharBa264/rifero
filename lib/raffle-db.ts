@@ -64,10 +64,10 @@ export async function getPublicData() {
 }
 
 export async function sellerFromCredentials(childName: string, pin: string) {
-  const seller = await getD1().prepare("SELECT id,child_name,display_name,pin_hash,limit_mode,limit_from,limit_to,limit_count FROM sellers WHERE lower(child_name)=lower(?) AND active=1")
-    .bind(childName.trim()).first<{ id: number; child_name: string; display_name: string; pin_hash: string; limit_mode: "range" | "count"; limit_from: number | null; limit_to: number | null; limit_count: number }>();
+  const seller = await getD1().prepare("SELECT id,child_name,display_name,pin_hash,limit_mode,limit_from,limit_to,limit_count,must_change_pin FROM sellers WHERE lower(child_name)=lower(?) AND active=1")
+    .bind(childName.trim()).first<{ id: number; child_name: string; display_name: string; pin_hash: string; limit_mode: "range" | "count"; limit_from: number | null; limit_to: number | null; limit_count: number; must_change_pin: number }>();
   if (!seller || seller.pin_hash !== (await sha256(pin))) return null;
-  return { id: seller.id, childName: seller.child_name, displayName: seller.display_name, limitMode: seller.limit_mode, limitFrom: seller.limit_from, limitTo: seller.limit_to, limitCount: seller.limit_count };
+  return { id: seller.id, childName: seller.child_name, displayName: seller.display_name, limitMode: seller.limit_mode, limitFrom: seller.limit_from, limitTo: seller.limit_to, limitCount: seller.limit_count, mustChangePin: Boolean(seller.must_change_pin) };
 }
 
 export async function isAdmin(request: Request) {

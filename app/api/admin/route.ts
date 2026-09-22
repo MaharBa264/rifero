@@ -82,12 +82,12 @@ export async function POST(request: Request) {
           .bind(String(data.child_name ?? "").trim(), String(data.display_name ?? "").trim(), data.active === false ? 0 : 1, mode, mode === "range" ? limitFrom : null, mode === "range" ? limitTo : null, limitCount, id).run();
         if (String(data.pin ?? "").trim()) {
           if (String(data.pin).trim().length < 4) return apiError(new Error("El PIN debe tener al menos 4 caracteres."), 400);
-          await db.prepare("UPDATE sellers SET pin_hash=? WHERE id=?").bind(await sha256(String(data.pin).trim()), id).run();
+          await db.prepare("UPDATE sellers SET pin_hash=?,must_change_pin=1 WHERE id=?").bind(await sha256(String(data.pin).trim()), id).run();
         }
       } else {
         const pin = String(data.pin ?? "").trim();
         if (pin.length < 4) return apiError(new Error("El PIN debe tener al menos 4 caracteres."), 400);
-        await db.prepare("INSERT INTO sellers (child_name,display_name,pin_hash,active,limit_mode,limit_from,limit_to,limit_count,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+        await db.prepare("INSERT INTO sellers (child_name,display_name,pin_hash,active,limit_mode,limit_from,limit_to,limit_count,must_change_pin,created_at) VALUES (?,?,?,?,?,?,?,?,1,?)")
           .bind(String(data.child_name ?? "").trim(), String(data.display_name ?? "").trim(), await sha256(pin), 1, mode, mode === "range" ? limitFrom : null, mode === "range" ? limitTo : null, limitCount, now).run();
       }
     } else if (action === "delete_seller") {

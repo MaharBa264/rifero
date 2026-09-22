@@ -29,6 +29,13 @@
       "when": 1790083990016,
       "tag": "0003_whole_wallop",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1790087700363,
+      "tag": "0004_lean_jack_power",
+      "breakpoints": true
     }
   ]
 }

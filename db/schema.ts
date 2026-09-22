@@ -36,6 +36,7 @@ export const sellers = sqliteTable("sellers", {
   limitFrom: integer("limit_from"),
   limitTo: integer("limit_to"),
   limitCount: integer("limit_count").notNull().default(15),
+  mustChangePin: integer("must_change_pin", { mode: "boolean" }).notNull().default(true),
   createdAt: text("created_at").notNull(),
 });
 

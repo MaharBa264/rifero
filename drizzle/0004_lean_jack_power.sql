@@ -1,0 +1,1 @@
+ALTER TABLE `sellers` ADD `must_change_pin` integer DEFAULT true NOT NULL;
