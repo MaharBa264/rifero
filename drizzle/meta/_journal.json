@@ -43,6 +43,13 @@
       "when": 1790091692644,
       "tag": "0005_funny_pandemic",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1790091992561,
+      "tag": "0006_overjoyed_wong",
+      "breakpoints": true
     }
   ]
 }

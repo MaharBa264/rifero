@@ -206,6 +206,7 @@ button, a, input, textarea { touch-action: manipulation; }
 .number-tile.sold { color: #9d174d; border-color: #f9a8d4; background: #fdf2f8; opacity: .72; }
 .number-tile:disabled { cursor: not-allowed; }
 .number-tile.outside-limit { filter: grayscale(.8); opacity: .38; }
+.number-tile.selected { outline: 3px solid #7c3aed; outline-offset: 2px; transform: translate(-2px,-2px); box-shadow: 6px 6px 0 #c4b5fd; }
 .admin-card { margin-top: 1.25rem; border: 1px solid #ddd6fe; border-radius: 1.5rem; background: white; padding: clamp(1rem, 3vw, 2rem); box-shadow: 0 10px 30px rgba(76,29,149,.05); }
 .admin-title { font-size: 1.5rem; font-weight: 900; letter-spacing: -.02em; }
 .confetti { position: absolute; pointer-events: none; width: 12px; height: 42px; border-radius: 99px; background: #f59e0b; opacity: .65; transform: rotate(32deg); }

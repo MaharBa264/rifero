@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 
 export type RaffleSettings = {
-  id: number; title: string; school: string; price_cents: number; number_count: number;
+  id: number; title: string; school: string; price_cents: number; promo_pair_price_cents: number | null; number_count: number;
   draw_date: string | null; draw_name: string; official_url: string; result_number: string | null;
   whatsapp_text: string; admin_emails: string; admin_pin_hash: string; admin_recovery_code_hash: string | null; updated_at: string;
   hero_title: string; hero_intro: string; logo_image_url: string; hero_image_url: string;
@@ -90,6 +90,11 @@ export function generateRecoveryCode() {
   const bytes = crypto.getRandomValues(new Uint8Array(12));
   const chars = Array.from(bytes, (b) => RECOVERY_ALPHABET[b % RECOVERY_ALPHABET.length]);
   return `${chars.slice(0, 4).join("")}-${chars.slice(4, 8).join("")}-${chars.slice(8, 12).join("")}`;
+}
+
+export function priceForSale(settings: RaffleSettings, count: number) {
+  if (count === 2 && settings.promo_pair_price_cents) return settings.promo_pair_price_cents;
+  return settings.price_cents * count;
 }
 
 export function apiError(error: unknown, status = 500) {

@@ -5,6 +5,7 @@ export const raffleSettings = sqliteTable("raffle_settings", {
   title: text("title").notNull(),
   school: text("school").notNull().default("6.º grado"),
   priceCents: integer("price_cents").notNull().default(300000),
+  promoPairPriceCents: integer("promo_pair_price_cents"),
   numberCount: integer("number_count").notNull().default(100),
   drawDate: text("draw_date"),
   drawName: text("draw_name").notNull().default("Lotería de la Ciudad — Quiniela"),
@@ -56,6 +57,7 @@ export const raffleNumbers = sqliteTable("raffle_numbers", {
   buyerName: text("buyer_name"),
   buyerPhone: text("buyer_phone"),
   notes: text("notes"),
+  priceCents: integer("price_cents"),
   active: integer("active", { mode: "boolean" }).notNull().default(true),
   updatedAt: text("updated_at").notNull(),
 }, (table) => [
