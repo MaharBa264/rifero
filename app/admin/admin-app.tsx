@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, DatabaseBackup, Download, Eye, EyeOff, Gift, KeyRound, LogOut, Palette, Plus, RotateCcw, Save, Settings, ShieldCheck, Ticket, Trash2, Users } from "lucide-react";
+import { ArrowLeft, DatabaseBackup, Download, Eye, EyeOff, Gift, KeyRound, Lock, LogOut, Palette, Plus, RotateCcw, Save, Settings, ShieldCheck, Ticket, Trash2, Trophy, Users } from "lucide-react";
+import { computeMappingParams, getOfficialEquivalentNumbers, validateFairness } from "@/lib/lottery-draw";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -39,8 +40,26 @@ export function AdminApp() {
     const r = await fetch("/api/admin", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, data: payload }) });
     const b = await r.json();
     if (!r.ok) return setError(b.error ?? "No se pudo guardar.");
-    setMessage(action === "delete_seller" ? "Vendedor desactivado y sus números liberados (las ventas confirmadas quedan intactas)" : action === "restore_seller" ? "Vendedor restaurado" : action === "reset" ? "Reinicio completado" : action === "admin_pin" ? "Clave actualizada" : "Cambios guardados");
+    setMessage(action === "delete_seller" ? "Vendedor desactivado y sus números liberados (las ventas confirmadas quedan intactas)" : action === "restore_seller" ? "Vendedor restaurado" : action === "reset" ? "Reinicio completado" : action === "admin_pin" ? "Clave actualizada" : action === "draw_config" ? "Método de sorteo guardado" : "Cambios guardados");
     await load();
+  }
+  async function closeRoster(): Promise<{ hash: string; soldCount: number } | null> {
+    setMessage(""); setError("");
+    const r = await fetch("/api/admin", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "close_roster" }) });
+    const b = await r.json();
+    if (!r.ok) { setError(b.error ?? "No se pudo cerrar el padrón."); return null; }
+    setMessage("Padrón cerrado");
+    await load();
+    return { hash: b.hash, soldCount: b.soldCount };
+  }
+  async function resolveDraw(payload: Row): Promise<Row | null> {
+    setMessage(""); setError("");
+    const r = await fetch("/api/admin", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "resolve_draw", data: payload }) });
+    const b = await r.json();
+    if (!r.ok) { setError(b.error ?? "No se pudo resolver el sorteo."); return null; }
+    setMessage("Sorteo resuelto");
+    await load();
+    return b.resolution as Row;
   }
   async function generateRecoveryCode(): Promise<string | null> {
     setMessage(""); setError("");
@@ -58,12 +77,13 @@ export function AdminApp() {
   const revenueCents = soldNumbers.reduce((sum, n) => sum + (Number(n.price_cents) || Number(data.settings.price_cents)), 0);
   return <main className="min-h-screen bg-[#f6f2ff] text-violet-950"><header className="border-b border-violet-200 bg-white"><div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6"><div className="flex items-center gap-3"><Link href="/" aria-label="Volver"><Button variant="outline" size="icon"><ArrowLeft/></Button></Link><div><h1 className="text-xl font-black">Panel de la rifa</h1><p className="text-sm text-violet-500">Sesión de administrador activa</p></div></div><div className="flex gap-2"><div className="hidden gap-2 sm:flex"><Button variant="outline" onClick={() => void download("json")}><DatabaseBackup/> JSON</Button><Button variant="outline" onClick={() => void download("csv")}><Download/> CSV</Button></div><Button variant="ghost" size="icon" aria-label="Cerrar sesión" onClick={() => void logout()}><LogOut/></Button></div></div></header>
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6"><div className="mb-7 grid gap-3 sm:grid-cols-3"><Stat label="Vendidos" value={sold} color="bg-pink-500"/><Stat label="Reservados" value={reserved} color="bg-amber-400"/><Stat label="Recaudación confirmada" value={new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 }).format(revenueCents / 100)} color="bg-violet-600"/></div>{message && <p className="mb-5 rounded-xl bg-emerald-100 p-3 font-bold text-emerald-800">✓ {message}</p>}{error && <p className="mb-5 rounded-xl bg-pink-100 p-3 font-bold text-pink-800">{error}</p>}
-      <Tabs defaultValue="settings"><TabsList className="h-auto w-full flex-wrap justify-start rounded-2xl bg-white p-2"><TabsTrigger value="settings"><Settings/> General</TabsTrigger><TabsTrigger value="design"><Palette/> Diseño</TabsTrigger><TabsTrigger value="prizes"><Gift/> Premios</TabsTrigger><TabsTrigger value="sellers"><Users/> Vendedores</TabsTrigger><TabsTrigger value="numbers"><Ticket/> Números</TabsTrigger><TabsTrigger value="security"><ShieldCheck/> Seguridad</TabsTrigger><TabsTrigger value="backup"><DatabaseBackup/> Respaldos y reinicio</TabsTrigger></TabsList>
+      <Tabs defaultValue="settings"><TabsList className="h-auto w-full flex-wrap justify-start rounded-2xl bg-white p-2"><TabsTrigger value="settings"><Settings/> General</TabsTrigger><TabsTrigger value="design"><Palette/> Diseño</TabsTrigger><TabsTrigger value="prizes"><Gift/> Premios</TabsTrigger><TabsTrigger value="sellers"><Users/> Vendedores</TabsTrigger><TabsTrigger value="numbers"><Ticket/> Números</TabsTrigger><TabsTrigger value="draw"><Trophy/> Sorteo</TabsTrigger><TabsTrigger value="security"><ShieldCheck/> Seguridad</TabsTrigger><TabsTrigger value="backup"><DatabaseBackup/> Respaldos y reinicio</TabsTrigger></TabsList>
         <TabsContent value="settings"><SettingsForm initial={data.settings} onSave={(v) => save("settings", v)}/></TabsContent>
         <TabsContent value="design"><DesignForm initial={data.settings} onSave={(v) => save("design", v)}/></TabsContent>
         <TabsContent value="prizes"><PrizesForm initial={data.prizes} onSave={(v) => save("prizes", v)}/></TabsContent>
         <TabsContent value="sellers"><SellersForm sellers={data.sellers} includeDeleted={includeDeleted} onToggleDeleted={toggleDeleted} onSave={(v) => save("seller", v)} onDelete={(id) => save("delete_seller", { id })} onRestore={(id) => save("restore_seller", { id })}/></TabsContent>
         <TabsContent value="numbers"><NumbersPanel numbers={data.numbers} onRelease={(n) => save("number", { number: n, status: "available" })}/></TabsContent>
+        <TabsContent value="draw"><DrawForm settings={data.settings} onSaveConfig={(v) => save("draw_config", v)} onCloseRoster={closeRoster} onResolve={resolveDraw}/></TabsContent>
         <TabsContent value="security"><SecurityForm recoveryCodeSet={Boolean(data.settings.admin_recovery_code_set)} onChangePin={(v) => save("admin_pin", v)} onGenerateRecoveryCode={generateRecoveryCode}/></TabsContent>
         <TabsContent value="backup"><BackupPanel onRestore={(v) => save("restore", v)} onDownload={download} onReset={(mode) => save("reset", { mode })}/></TabsContent>
       </Tabs></div></main>;
@@ -141,6 +161,110 @@ function RecoverAccess({ onRecovered }: { onRecovered: () => void }) {
     <button type="button" className="mt-3 block w-full text-center text-sm font-bold text-violet-600 underline underline-offset-4" onClick={() => setOpen(true)}>¿Olvidaste tu clave?</button>
     <Dialog open={open} onOpenChange={setOpen}><DialogContent className="rounded-[1.75rem] border-2 border-violet-200 sm:max-w-md"><DialogHeader><DialogTitle className="text-2xl font-black text-violet-950">Restablecer clave</DialogTitle><DialogDescription>Usá el código de recuperación que generaste en la pestaña Seguridad del panel.</DialogDescription></DialogHeader><form onSubmit={submit} className="grid gap-4"><div><Label htmlFor="recovery-code">Código de recuperación</Label><Input id="recovery-code" value={code} onChange={(e) => setCode(e.target.value)} placeholder="XXXX-XXXX-XXXX" autoComplete="off"/></div><div><Label htmlFor="recovery-pin">Nueva clave</Label><Input id="recovery-pin" type="password" value={pin} onChange={(e) => setPin(e.target.value)} autoComplete="new-password"/></div><div><Label htmlFor="recovery-pin-confirm">Repetir clave</Label><Input id="recovery-pin-confirm" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password"/></div>{error && <p className="rounded-xl bg-pink-100 p-3 text-sm font-bold text-pink-800">{error}</p>}<Button type="submit" disabled={saving} className="bg-violet-600"><KeyRound/> Restablecer</Button></form></DialogContent></Dialog>
   </>;
+}
+
+function DrawForm({ settings, onSaveConfig, onCloseRoster, onResolve }: { settings: Row; onSaveConfig: (v: Row) => void; onCloseRoster: () => Promise<{ hash: string; soldCount: number } | null>; onResolve: (v: Row) => Promise<Row | null> }) {
+  const [v, setV] = useState(settings); const set = (key: string, value: unknown) => setV((old) => ({ ...old, [key]: value }));
+  const [previewNumber, setPreviewNumber] = useState(Number(settings.start_number ?? 0));
+  const locked = Boolean(settings.active_draw_resolution_id);
+  const numberCount = Number(settings.number_count) || 0;
+  const startNumber = Number(settings.start_number) || 0;
+  const digits = Math.max(1, Math.min(10, Number(v.official_result_digits) || 4));
+  const resultSpace = 10 ** digits;
+  const params = numberCount > 0 ? computeMappingParams(numberCount, resultSpace) : null;
+  const fairness = numberCount > 0 ? validateFairness(numberCount, resultSpace) : null;
+  const method = String(v.draw_resolution_method ?? "direct");
+  let equivalents: string[] | null = null;
+  try { if (method === "official_lottery_mapping" && numberCount > 0) equivalents = getOfficialEquivalentNumbers({ raffleNumber: previewNumber, startNumber, numberCount, resultSpace, digits }); } catch { equivalents = null; }
+
+  return <div className="grid gap-6">
+    <section className="admin-card">
+      <h2 className="admin-title">Método de sorteo</h2>
+      <p className="mt-2 text-violet-600">Definí cómo se va a determinar el número ganador. Esta regla tiene que quedar fija <strong>antes</strong> del sorteo — una vez resuelto no se puede volver a cambiar.</p>
+      {locked && <p className="mt-3 flex items-center gap-2 rounded-xl bg-amber-100 p-3 text-sm font-bold text-amber-900"><Lock className="h-4 w-4"/> El sorteo ya fue resuelto: esta configuración quedó bloqueada.</p>}
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <div><Label>Método</Label><Select value={method} onValueChange={(x) => set("draw_resolution_method", x)} disabled={locked}><SelectTrigger className="mt-2 w-full bg-white"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="direct">Directo (número ganador cargado a mano)</SelectItem><SelectItem value="official_lottery_mapping">Mapeo por lotería oficial (Quiniela)</SelectItem></SelectContent></Select></div>
+        {method === "official_lottery_mapping" && <div><Label>Cifras del resultado oficial</Label><Input type="number" value={digits} onChange={(e) => set("official_result_digits", Number(e.target.value))} disabled={locked} className="mt-2 bg-white"/></div>}
+      </div>
+      {method === "official_lottery_mapping" && <>
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <Field label="Nombre de la lotería" value={v.official_lottery_name} onChange={(x) => set("official_lottery_name", x)}/>
+          <Field label="Nombre del sorteo" value={v.official_draw_name} onChange={(x) => set("official_draw_name", x)}/>
+          <Field label="Fecha del sorteo" value={v.official_draw_date} onChange={(x) => set("official_draw_date", x)} type="date"/>
+          <Field label="URL oficial del resultado" value={v.official_draw_url} onChange={(x) => set("official_draw_url", x)}/>
+          <Field label="Posiciones del extracto oficial" value={v.official_result_count} onChange={(x) => set("official_result_count", Number(x))} type="number"/>
+          <div><Label>Si el número no fue vendido</Label><Select value={String(v.unclaimed_winner_policy ?? "no_winner")} onValueChange={(x) => set("unclaimed_winner_policy", x)} disabled={locked}><SelectTrigger className="mt-2 w-full bg-white"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="no_winner">No hay ganador</SelectItem><SelectItem value="next_valid_official_position">Pasar a la siguiente posición válida</SelectItem></SelectContent></Select></div>
+        </div>
+        <div className="mt-4"><Label>Nota que aparece en el comprobante y en el sitio</Label><Textarea value={String(v.draw_resolution_note ?? "")} onChange={(e) => set("draw_resolution_note", e.target.value)} className="mt-2 bg-white"/></div>
+        <label className="mt-4 flex items-center gap-2 text-sm font-bold text-violet-800"><input type="checkbox" checked={Boolean(v.show_winner_buyer_name)} onChange={(e) => set("show_winner_buyer_name", e.target.checked)} disabled={locked} className="h-4 w-4"/> Mostrar el nombre del comprador ganador públicamente</label>
+
+        {params && fairness && <div className="mt-5 rounded-2xl bg-violet-50 p-4 text-sm">
+          <p className="font-black text-violet-900">Resumen matemático</p>
+          <ul className="mt-2 grid gap-1 text-violet-800">
+            <li>Números de la rifa: <strong>{numberCount}</strong></li>
+            <li>Resultados posibles oficiales: <strong>{resultSpace}</strong></li>
+            <li>Resultados válidos utilizados: <strong>{params.usableResults}</strong></li>
+            <li>Resultados descartados: <strong>{params.discardedCount}</strong></li>
+            <li>Equivalentes por número: <strong>{params.equivalentsPerNumber}</strong></li>
+          </ul>
+          {!fairness.fair && <p className="mt-3 rounded-xl bg-pink-100 p-3 font-bold text-pink-800">⚠ Esta configuración no es matemáticamente justa: {fairness.issues.join(" ")}</p>}
+        </div>}
+
+        {equivalents && <div className="mt-4 rounded-2xl border border-violet-200 bg-white p-4">
+          <Label>Previsualizar equivalentes de un número</Label>
+          <div className="mt-2 flex items-center gap-3"><Input type="number" value={previewNumber} onChange={(e) => setPreviewNumber(Number(e.target.value))} className="w-32"/><p className="text-sm text-violet-700">{equivalents.join(" · ")}</p></div>
+        </div>}
+      </>}
+      <Button onClick={() => onSaveConfig(v)} disabled={locked || (fairness ? !fairness.fair && method === "official_lottery_mapping" : false)} className="mt-6 bg-violet-600"><Save/> Guardar método de sorteo</Button>
+    </section>
+
+    <RosterCard settings={settings} onCloseRoster={onCloseRoster}/>
+
+    {method === "official_lottery_mapping" && <ResolveDrawCard settings={settings} onResolve={onResolve}/>}
+  </div>;
+}
+
+function RosterCard({ settings, onCloseRoster }: { settings: Row; onCloseRoster: () => Promise<{ hash: string; soldCount: number } | null> }) {
+  const closed = Boolean(settings.roster_closed_at);
+  return <section className="admin-card">
+    <h2 className="admin-title">Cierre del padrón</h2>
+    <p className="mt-2 text-violet-600">Antes de resolver el sorteo, cerrá el padrón: se congela la lista de números vendidos (se guarda un hash reproducible) y dejan de aceptarse nuevas ventas o cambios.</p>
+    {closed ? <div className="mt-4 rounded-2xl bg-emerald-50 p-4"><p className="font-black text-emerald-900">✓ Padrón cerrado el {String(settings.roster_closed_at).slice(0, 10)}</p><p className="mt-1 text-sm text-emerald-800">{String(settings.roster_sold_count)} números vendidos.</p><p className="mt-2 break-all rounded-lg bg-white p-2 font-mono text-xs text-violet-700">Hash: {String(settings.roster_hash)}</p></div>
+      : <ConfirmButton title="¿Cerrar el padrón?" description="Deja de aceptarse cualquier venta, reserva o cambio de comprador hasta que se reinicien las ventas. Esta acción se audita." action="Cerrar padrón" onConfirm={() => void onCloseRoster()}><Lock/> Cerrar padrón</ConfirmButton>}
+  </section>;
+}
+
+function ResolveDrawCard({ settings, onResolve }: { settings: Row; onResolve: (v: Row) => Promise<Row | null> }) {
+  const [text, setText] = useState(""); const [confirmCorrection, setConfirmCorrection] = useState(false); const [correctionReason, setCorrectionReason] = useState("");
+  const [result, setResult] = useState<Row | null>(null);
+  const alreadyResolved = Boolean(settings.active_draw_resolution_id);
+  const closed = Boolean(settings.roster_closed_at);
+  async function submit() {
+    const officialResults = text.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean).map(Number).filter((n) => Number.isInteger(n));
+    if (!officialResults.length) return;
+    const payload: Row = { officialResults };
+    if (alreadyResolved) { payload.confirmCorrection = true; payload.correctionReason = correctionReason; }
+    const resolution = await onResolve(payload);
+    if (resolution) { setResult(resolution); setText(""); setConfirmCorrection(false); setCorrectionReason(""); }
+  }
+  return <section className="admin-card">
+    <h2 className="admin-title">Cargar resultado oficial y resolver</h2>
+    <p className="mt-2 text-violet-600">Pegá las posiciones del extracto oficial en orden (una por línea o separadas por coma). El sistema descarta automáticamente las que estén fuera de rango y usa la primera válida.</p>
+    {!closed && <p className="mt-3 rounded-xl bg-amber-100 p-3 text-sm font-bold text-amber-900">Cerrá el padrón primero.</p>}
+    {alreadyResolved && <div className="mt-3 rounded-xl bg-amber-100 p-3 text-sm font-bold text-amber-900"><label className="flex items-center gap-2"><input type="checkbox" checked={confirmCorrection} onChange={(e) => setConfirmCorrection(e.target.checked)} className="h-4 w-4"/> Confirmo que quiero corregir el sorteo ya resuelto</label>{confirmCorrection && <Textarea value={correctionReason} onChange={(e) => setCorrectionReason(e.target.value)} placeholder="Motivo de la corrección (obligatorio, queda auditado)" className="mt-2 bg-white"/>}</div>}
+    <Textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={"9347\n7826\n0021\n..."} disabled={!closed} className="mt-3 bg-white" rows={6}/>
+    <Button onClick={() => void submit()} disabled={!closed || (alreadyResolved && (!confirmCorrection || !correctionReason.trim()))} className="mt-3 bg-violet-600"><Trophy/> Resolver sorteo</Button>
+    {result && <div className="mt-5 rounded-2xl bg-violet-950 p-5 text-white">
+      <p className="text-sm font-black uppercase tracking-wider text-pink-300">{String(result.status) === "resolved" ? "Sorteo resuelto" : "No se pudo resolver"}</p>
+      {result.status === "resolved" ? <>
+        <p className="mt-2 text-4xl font-black">{String(result.winnerNumber).padStart(4, "0")}</p>
+        <p className="mt-1 text-sm text-violet-200">Posición {String(result.positionUsed)} · resultado {String(result.officialResultUsed)}</p>
+        <p className="mt-1 text-sm text-violet-200">{String(result.formula)}</p>
+        {result.winnerWasSold === false && <p className="mt-2 rounded-lg bg-pink-500/30 p-2 text-sm font-bold">Este número no estaba vendido.</p>}
+      </> : <p className="mt-2 text-sm text-violet-200">Ninguna de las posiciones cargadas resultó válida{settings.unclaimed_winner_policy === "next_valid_official_position" ? " o vendida" : ""}. Cargá más posiciones del extracto.</p>}
+      {Array.isArray(result.discarded) && result.discarded.length > 0 && <div className="mt-3 text-xs text-violet-300"><p className="font-bold">Descartados:</p><ul>{(result.discarded as Array<{ position: number; result: number; reason: string }>).map((d) => <li key={d.position}>#{d.position} → {String(d.result).padStart(4, "0")} ({d.reason === "out_of_range" ? "fuera de rango" : "no vendido"})</li>)}</ul></div>}
+    </div>}
+  </section>;
 }
 
 function BackupPanel({ onRestore, onDownload, onReset }: { onRestore: (v: unknown) => void; onDownload: (format: "json" | "csv") => Promise<void>; onReset: (mode: "sales" | "factory") => void }) { return <section className="admin-card"><h2 className="admin-title">Respaldos y reinicio</h2><p className="mt-2 max-w-2xl text-violet-600">Descargá una copia completa en JSON y una planilla CSV de ventas. Guardalas en dos lugares distintos.</p><div className="mt-5 flex flex-wrap gap-3"><Button className="bg-violet-600" onClick={() => void onDownload("json")}><DatabaseBackup/> Descargar copia completa</Button><Button variant="outline" onClick={() => void onDownload("csv")}><Download/> Descargar ventas CSV</Button><label className="inline-flex cursor-pointer items-center rounded-lg border border-violet-200 bg-white px-4 py-2 text-sm font-bold"><input type="file" accept="application/json" className="hidden" onChange={async (e) => { const file = e.target.files?.[0]; if (!file) return; onRestore(JSON.parse(await file.text())); }}/>Restaurar configuración JSON</label></div><div className="mt-8 grid gap-4 md:grid-cols-2"><div className="rounded-2xl border border-amber-200 bg-amber-50 p-5"><h3 className="font-black text-amber-950">Vaciar ventas de prueba</h3><p className="my-3 text-sm text-amber-900">Libera todos los números. Conserva vendedores, premios y diseño.</p><ConfirmButton title="¿Vaciar todas las ventas?" description="Todos los números volverán a estar libres. Los vendedores y la configuración se conservarán." action="Vaciar ventas" destructive={false} onConfirm={() => onReset("sales")}><RotateCcw/> Vaciar ventas</ConfirmButton></div><div className="rounded-2xl border border-pink-200 bg-pink-50 p-5"><h3 className="font-black text-pink-950">Reiniciar toda la rifa</h3><p className="my-3 text-sm text-pink-900">Borra vendedores, premios y ventas, y restablece configuración y diseño. Conserva la clave administradora.</p><ConfirmButton title="¿Reiniciar toda la rifa?" description="Esta acción borra vendedores, premios y ventas. La clave administradora se conserva." action="Reiniciar todo" onConfirm={() => onReset("factory")}><Trash2/> Reiniciar todo</ConfirmButton></div></div></section>; }

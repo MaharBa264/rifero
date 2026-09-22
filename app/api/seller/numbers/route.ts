@@ -8,6 +8,8 @@ export async function POST(request: Request) {
   const requestId = newRequestId();
   try {
     const seller = await requireSeller(request);
+    const settings = await ensureSeed();
+    if (settings.roster_closed_at) return apiError(new Error("El padrón de esta rifa ya está cerrado. No se pueden cargar más ventas."), 409);
     return withIdempotency("seller_numbers", request.headers.get("idempotency-key"), async () => {
       const body = await request.json() as { numbers?: number[]; buyerName?: string; buyerLastName?: string; buyerPhone?: string; buyerEmail?: string; notes?: string; status?: "reserved" | "sold" };
       const numbers = Array.from(new Set((body.numbers ?? []).map(Number).filter(Number.isInteger)));
@@ -42,7 +44,6 @@ export async function POST(request: Request) {
         if ((reserved?.total ?? 0) + newReservations > seller.maxReservedPerSeller) return apiError(new Error(`Ya alcanzaste el máximo de ${seller.maxReservedPerSeller} números reservados sin vender. Marcá alguno como pagado o liberalo antes de reservar otro.`), 409);
       }
 
-      const settings = await ensureSeed();
       const totalPriceCents = priceForSale(settings, 2);
       const perNumberCents = Math.round(totalPriceCents / 2);
       const notes = body.notes?.trim() ?? "";

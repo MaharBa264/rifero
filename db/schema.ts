@@ -27,7 +27,47 @@ export const raffleSettings = sqliteTable("raffle_settings", {
   accentColor: text("accent_color").notNull().default("#fbbf24"),
   backgroundColor: text("background_color").notNull().default("#fff8ed"),
   textColor: text("text_color").notNull().default("#2e1557"),
+
+  // --- Official lottery draw resolution ---
+  drawResolutionMethod: text("draw_resolution_method", { enum: ["direct", "official_lottery_mapping"] }).notNull().default("direct"),
+  officialLotteryName: text("official_lottery_name"),
+  officialDrawName: text("official_draw_name"),
+  officialDrawDate: text("official_draw_date"),
+  officialDrawUrl: text("official_draw_url"),
+  officialResultCount: integer("official_result_count").default(20),
+  officialResultDigits: integer("official_result_digits").default(4),
+  mappingNumberCount: integer("mapping_number_count"),
+  mappingStartNumber: integer("mapping_start_number"),
+  mappingResultSpace: integer("mapping_result_space").default(10000),
+  mappingValidResultLimit: integer("mapping_valid_result_limit"),
+  drawResolutionNote: text("draw_resolution_note").notNull().default("Se toma la primera posición válida del extracto oficial."),
+  unclaimedWinnerPolicy: text("unclaimed_winner_policy", { enum: ["no_winner", "next_valid_official_position"] }).notNull().default("no_winner"),
+  showWinnerBuyerName: integer("show_winner_buyer_name", { mode: "boolean" }).notNull().default(false),
+
+  rosterClosedAt: text("roster_closed_at"),
+  rosterHash: text("roster_hash"),
+  rosterSoldCount: integer("roster_sold_count"),
+
+  activeDrawResolutionId: integer("active_draw_resolution_id"),
+
   updatedAt: text("updated_at").notNull(),
+});
+
+export const drawResolutions = sqliteTable("draw_resolutions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  officialResultsJson: text("official_results_json").notNull(),
+  discardedJson: text("discarded_json").notNull(),
+  positionUsed: integer("position_used"),
+  officialResultUsed: integer("official_result_used"),
+  winnerNumber: integer("winner_number"),
+  winnerWasSold: integer("winner_was_sold", { mode: "boolean" }),
+  status: text("status", { enum: ["resolved", "exhausted"] }).notNull(),
+  unclaimedPolicy: text("unclaimed_policy").notNull(),
+  formula: text("formula"),
+  correctionOf: integer("correction_of"),
+  correctionReason: text("correction_reason"),
+  resolvedBy: text("resolved_by").notNull(),
+  createdAt: text("created_at").notNull(),
 });
 
 export const sellers = sqliteTable("sellers", {

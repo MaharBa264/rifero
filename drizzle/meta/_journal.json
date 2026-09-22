@@ -71,6 +71,13 @@
       "when": 1790101606067,
       "tag": "0009_careful_blue_blade",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1790103150778,
+      "tag": "0010_mushy_sinister_six",
+      "breakpoints": true
     }
   ]
 }

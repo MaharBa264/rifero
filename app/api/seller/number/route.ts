@@ -8,6 +8,8 @@ export async function POST(request: Request) {
   const requestId = newRequestId();
   try {
     const seller = await requireSeller(request);
+    const settings = await ensureSeed();
+    if (settings.roster_closed_at) return apiError(new Error("El padrón de esta rifa ya está cerrado. No se pueden cargar más ventas."), 409);
     return withIdempotency("seller_number", request.headers.get("idempotency-key"), async () => {
       const body = await request.json() as { number?: number; buyerName?: string; buyerLastName?: string; buyerPhone?: string; buyerEmail?: string; notes?: string; status?: "reserved" | "sold" };
       const number = Number(body.number);
@@ -36,7 +38,6 @@ export async function POST(request: Request) {
         const reserved = await db.prepare("SELECT COUNT(*) AS total FROM raffle_numbers WHERE active=1 AND seller_id=? AND status='reserved'").bind(seller.id).first<{ total: number }>();
         if ((reserved?.total ?? 0) >= seller.maxReservedPerSeller) return apiError(new Error(`Ya alcanzaste el máximo de ${seller.maxReservedPerSeller} números reservados sin vender. Marcá alguno como pagado o liberalo antes de reservar otro.`), 409);
       }
-      const settings = await ensureSeed();
       const priceCents = priceForSale(settings, 1);
       const result = await db.prepare("UPDATE raffle_numbers SET status=?,seller_id=?,buyer_name=?,buyer_last_name=?,buyer_phone=?,buyer_email=?,notes=?,price_cents=?,updated_at=? WHERE number=? AND active=1 AND (status='available' OR seller_id=?)")
         .bind(status, seller.id, buyerName, buyerLastName, buyerPhone, buyerEmail, body.notes?.trim() ?? "", priceCents, now, number, seller.id).run();
@@ -55,6 +56,8 @@ export async function DELETE(request: Request) {
   const requestId = newRequestId();
   try {
     const seller = await requireSeller(request);
+    const settings = await ensureSeed();
+    if (settings.roster_closed_at) return apiError(new Error("El padrón de esta rifa ya está cerrado."), 409);
     const body = await request.json() as { number?: number };
     const db = getD1();
     const result = await db.prepare("UPDATE raffle_numbers SET status='available',seller_id=NULL,buyer_name=NULL,buyer_last_name=NULL,buyer_phone=NULL,buyer_email=NULL,notes=NULL,price_cents=NULL,updated_at=? WHERE number=? AND seller_id=?")

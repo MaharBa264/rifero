@@ -6,6 +6,8 @@ import { createSession, revokeAllSessionsFor } from "@/lib/session";
 import { logAudit, redact } from "@/lib/audit";
 import { withIdempotency } from "@/lib/idempotency";
 import { newRequestId } from "@/lib/observability";
+import { resolveOfficialLotteryDraw, validateFairness } from "@/lib/lottery-draw";
+import { computeRosterHash } from "@/lib/roster-hash";
 
 const COLOR = /^#[0-9a-fA-F]{6}$/;
 const FONTS = new Set(["Trebuchet MS", "Arial", "Georgia", "Verdana", "Comic Sans MS"]);
@@ -129,6 +131,8 @@ export async function POST(request: Request) {
       if (!id) return apiError(new Error("Vendedor inválido."), 400);
       await db.prepare("UPDATE sellers SET deleted_at=NULL WHERE id=?").bind(id).run();
     } else if (action === "number") {
+      const settingsForNumber = await ensureSeed();
+      if (settingsForNumber.roster_closed_at) return apiError(new Error("El padrón está cerrado: no se pueden modificar números hasta reabrirlo (vaciar ventas)."), 409);
       const data = body.data as Record<string, unknown>;
       const number = Number(data.number);
       const status = ["available", "reserved", "sold"].includes(String(data.status)) ? String(data.status) : "available";
@@ -164,14 +168,95 @@ export async function POST(request: Request) {
       await db.prepare("UPDATE raffle_settings SET admin_recovery_code_hash=? WHERE id=1").bind(await sha256(code)).run();
       await logAudit(db, { action: "admin_generate_recovery_code", actorLabel: admin.email, actorType: "admin", entityType: "admin", requestId });
       return Response.json({ ok: true, code });
+    } else if (action === "draw_config") {
+      const data = body.data as Record<string, unknown>;
+      const settings = await ensureSeed();
+      if (settings.active_draw_resolution_id) return apiError(new Error("El sorteo ya fue resuelto. La regla de resolución no puede cambiarse después."), 409);
+      const method = data.draw_resolution_method === "official_lottery_mapping" ? "official_lottery_mapping" : "direct";
+      const policy = data.unclaimed_winner_policy === "next_valid_official_position" ? "next_valid_official_position" : "no_winner";
+      const digits = Math.max(1, Math.min(10, Number(data.official_result_digits) || 4));
+      const resultSpace = 10 ** digits;
+      let mappingNumberCount: number | null = null;
+      let mappingStartNumber: number | null = null;
+      let mappingLimit: number | null = null;
+      if (method === "official_lottery_mapping") {
+        mappingNumberCount = settings.number_count;
+        mappingStartNumber = settings.start_number;
+        const report = validateFairness(mappingNumberCount, resultSpace);
+        if (!report.fair) return apiError(new Error(`La configuración no es matemáticamente justa: ${report.issues.join(" ")}`), 400);
+        mappingLimit = report.usableResults;
+      }
+      await db.prepare(
+        "UPDATE raffle_settings SET draw_resolution_method=?,official_lottery_name=?,official_draw_name=?,official_draw_date=?,official_draw_url=?,official_result_count=?,official_result_digits=?,mapping_number_count=?,mapping_start_number=?,mapping_result_space=?,mapping_valid_result_limit=?,draw_resolution_note=?,unclaimed_winner_policy=?,show_winner_buyer_name=?,updated_at=? WHERE id=1",
+      ).bind(
+        method, data.official_lottery_name ? String(data.official_lottery_name) : null, data.official_draw_name ? String(data.official_draw_name) : null,
+        data.official_draw_date ? String(data.official_draw_date) : null, data.official_draw_url ? String(data.official_draw_url) : null,
+        Math.max(1, Number(data.official_result_count) || 20), digits, mappingNumberCount, mappingStartNumber, method === "official_lottery_mapping" ? resultSpace : null, mappingLimit,
+        String(data.draw_resolution_note ?? "Se toma la primera posición válida del extracto oficial."), policy, data.show_winner_buyer_name ? 1 : 0, now,
+      ).run();
+    } else if (action === "close_roster") {
+      const settings = await ensureSeed();
+      if (settings.roster_closed_at) return apiError(new Error("El padrón ya está cerrado."), 409);
+      const sold = await db.prepare("SELECT number FROM raffle_numbers WHERE active=1 AND status='sold'").all<{ number: number }>();
+      const soldNumbers = sold.results.map((r) => r.number);
+      const hash = await computeRosterHash(soldNumbers);
+      await db.prepare("UPDATE raffle_settings SET roster_closed_at=?,roster_hash=?,roster_sold_count=? WHERE id=1").bind(now, hash, soldNumbers.length).run();
+      await logAudit(db, { action: "admin_close_roster", actorLabel: admin.email, actorType: "admin", entityType: "roster", after: { hash, soldCount: soldNumbers.length }, requestId });
+      return Response.json({ ok: true, hash, soldCount: soldNumbers.length, closedAt: now });
+    } else if (action === "resolve_draw") {
+      const data = body.data as Record<string, unknown>;
+      const settings = await ensureSeed();
+      if (settings.draw_resolution_method !== "official_lottery_mapping") return apiError(new Error("Configurá el método de sorteo por mapeo oficial antes de resolver."), 400);
+      if (!settings.roster_closed_at) return apiError(new Error("Cerrá el padrón antes de resolver el sorteo."), 409);
+      if (!settings.mapping_number_count || !settings.mapping_valid_result_limit) return apiError(new Error("La configuración del sorteo está incompleta."), 400);
+      const officialResults = Array.isArray(data.officialResults) ? data.officialResults.map(Number).filter((n) => Number.isInteger(n) && n >= 0) : [];
+      if (!officialResults.length) return apiError(new Error("Cargá al menos un resultado oficial."), 400);
+      const isCorrection = Boolean(settings.active_draw_resolution_id);
+      if (isCorrection && !data.confirmCorrection) return apiError(new Error("Este sorteo ya fue resuelto. Confirmá explícitamente que querés corregirlo e indicá el motivo."), 409);
+      if (isCorrection && !String(data.correctionReason ?? "").trim()) return apiError(new Error("Indicá el motivo de la corrección."), 400);
+
+      const soldRows = await db.prepare("SELECT number FROM raffle_numbers WHERE active=1 AND status='sold'").all<{ number: number }>();
+      const soldSet = new Set(soldRows.results.map((r) => r.number));
+      const resolution = resolveOfficialLotteryDraw({
+        raffleStartNumber: settings.mapping_start_number ?? 0,
+        raffleNumberCount: settings.mapping_number_count,
+        officialResults,
+        resultSpace: settings.mapping_result_space ?? 10000,
+        unclaimedPolicy: settings.unclaimed_winner_policy,
+        isSold: (n) => soldSet.has(n),
+      });
+
+      const insert = await db.prepare(
+        "INSERT INTO draw_resolutions (official_results_json,discarded_json,position_used,official_result_used,winner_number,winner_was_sold,status,unclaimed_policy,formula,correction_of,correction_reason,resolved_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      ).bind(
+        JSON.stringify(officialResults), JSON.stringify(resolution.discarded), resolution.positionUsed, resolution.officialResultUsed,
+        resolution.winnerNumber, resolution.winnerWasSold === null ? null : (resolution.winnerWasSold ? 1 : 0), resolution.status, settings.unclaimed_winner_policy, resolution.formula,
+        isCorrection ? settings.active_draw_resolution_id : null, isCorrection ? String(data.correctionReason) : null, admin.email, now,
+      ).run();
+      const resolutionId = insert.meta.last_row_id;
+      if (resolution.status === "resolved") {
+        await db.prepare("UPDATE raffle_settings SET active_draw_resolution_id=? WHERE id=1").bind(resolutionId).run();
+      }
+      await logAudit(db, {
+        action: isCorrection ? "admin_resolve_draw_correction" : "admin_resolve_draw", actorLabel: admin.email, actorType: "admin", entityType: "draw_resolution", entityId: resolutionId,
+        before: isCorrection ? { previousResolutionId: settings.active_draw_resolution_id } : undefined,
+        after: { status: resolution.status, winnerNumber: resolution.winnerNumber, positionUsed: resolution.positionUsed, officialResultUsed: resolution.officialResultUsed, reason: isCorrection ? data.correctionReason : undefined },
+        requestId,
+      });
+      return Response.json({ ok: true, resolution, resolutionId });
     } else if (action === "reset") {
       const mode = String((body.data as Record<string, unknown>)?.mode ?? "sales");
-      await db.prepare("UPDATE raffle_numbers SET status='available',seller_id=NULL,buyer_name=NULL,buyer_last_name=NULL,buyer_phone=NULL,buyer_email=NULL,notes=NULL,price_cents=NULL,updated_at=?").bind(now).run();
+      // Any prior draw resolution/roster closure is tied to a specific sold set — clearing sales invalidates it.
+      await db.batch([
+        db.prepare("UPDATE raffle_numbers SET status='available',seller_id=NULL,buyer_name=NULL,buyer_last_name=NULL,buyer_phone=NULL,buyer_email=NULL,notes=NULL,price_cents=NULL,updated_at=?").bind(now),
+        db.prepare("UPDATE raffle_settings SET roster_closed_at=NULL,roster_hash=NULL,roster_sold_count=NULL,active_draw_resolution_id=NULL WHERE id=1"),
+      ]);
       if (mode === "factory") {
         await db.batch([
           db.prepare("DELETE FROM sellers"),
           db.prepare("DELETE FROM prizes"),
-          db.prepare("UPDATE raffle_settings SET title='La gran rifa de 6.º',school='6.º grado',price_cents=300000,promo_pair_price_cents=NULL,max_reserved_per_seller=NULL,start_number=0,number_count=100,draw_date=NULL,draw_name='Lotería de la Ciudad — Quiniela',official_url='https://www.loteriadelaciudad.gob.ar/',result_number=NULL,whatsapp_text='¡Gracias por colaborar con nuestra rifa!',admin_emails='',hero_title='Ayudanos a hacer algo enorme.',hero_intro='Cada número suma. Elegí el tuyo con una familia vendedora y guardá el comprobante para el sorteo.',logo_image_url='',hero_image_url='',font_family='Trebuchet MS',primary_color='#6d28d9',secondary_color='#ec4899',accent_color='#fbbf24',background_color='#fff8ed',text_color='#2e1557',updated_at=? WHERE id=1").bind(now),
+          db.prepare("DELETE FROM draw_resolutions"),
+          db.prepare("UPDATE raffle_settings SET title='La gran rifa de 6.º',school='6.º grado',price_cents=300000,promo_pair_price_cents=NULL,max_reserved_per_seller=NULL,start_number=0,number_count=100,draw_date=NULL,draw_name='Lotería de la Ciudad — Quiniela',official_url='https://www.loteriadelaciudad.gob.ar/',result_number=NULL,whatsapp_text='¡Gracias por colaborar con nuestra rifa!',admin_emails='',hero_title='Ayudanos a hacer algo enorme.',hero_intro='Cada número suma. Elegí el tuyo con una familia vendedora y guardá el comprobante para el sorteo.',logo_image_url='',hero_image_url='',font_family='Trebuchet MS',primary_color='#6d28d9',secondary_color='#ec4899',accent_color='#fbbf24',background_color='#fff8ed',text_color='#2e1557',draw_resolution_method='direct',official_lottery_name=NULL,official_draw_name=NULL,official_draw_date=NULL,official_draw_url=NULL,mapping_number_count=NULL,mapping_start_number=NULL,mapping_valid_result_limit=NULL,unclaimed_winner_policy='no_winner',updated_at=? WHERE id=1").bind(now),
           db.prepare("UPDATE raffle_numbers SET active=CASE WHEN number<100 THEN 1 ELSE 0 END"),
         ]);
       }
