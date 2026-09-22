@@ -19,10 +19,10 @@ export async function GET(request: Request) {
     ]);
     const stamp = new Date().toISOString().slice(0, 10);
     if (format === "csv") {
-      const header = ["numero", "estado", "vendedor", "comprador", "telefono", "notas", "actualizado"];
+      const header = ["numero", "estado", "vendedor", "comprador_nombre", "comprador_apellido", "telefono", "email", "precio_centavos", "notas", "actualizado"];
       const rows = numbers.results.map((n) => {
         const row = n as Record<string, unknown>;
-        return [row.number,row.status,row.seller_name,row.buyer_name,row.buyer_phone,row.notes,row.updated_at].map(csvCell).join(",");
+        return [row.number,row.status,row.seller_name,row.buyer_name,row.buyer_last_name,row.buyer_phone,row.buyer_email,row.price_cents,row.notes,row.updated_at].map(csvCell).join(",");
       });
       return new Response([header.join(","), ...rows].join("\n"), { headers: { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename=rifa-${stamp}.csv` } });
     }

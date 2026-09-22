@@ -44,7 +44,9 @@ export async function POST(request: Request) {
       await db.prepare("UPDATE raffle_settings SET title=?,school=?,price_cents=?,number_count=?,draw_date=?,draw_name=?,official_url=?,result_number=?,whatsapp_text=?,admin_emails=?,updated_at=? WHERE id=1")
         .bind(String(data.title ?? "Rifa"), String(data.school ?? ""), Math.max(0, Number(data.price_cents) || 0), count, data.draw_date ? String(data.draw_date) : null, String(data.draw_name ?? ""), String(data.official_url ?? ""), data.result_number ? String(data.result_number) : null, String(data.whatsapp_text ?? ""), String(data.admin_emails ?? ""), now).run();
       const promoRaw = Number(data.promo_pair_price_cents);
-      await db.prepare("UPDATE raffle_settings SET promo_pair_price_cents=? WHERE id=1").bind(promoRaw > 0 ? promoRaw : null).run();
+      const maxReservedRaw = Number(data.max_reserved_per_seller);
+      await db.prepare("UPDATE raffle_settings SET promo_pair_price_cents=?,max_reserved_per_seller=? WHERE id=1")
+        .bind(promoRaw > 0 ? promoRaw : null, maxReservedRaw > 0 ? maxReservedRaw : null).run();
       const existing = await db.prepare("SELECT number FROM raffle_numbers ORDER BY number").all<{ number: number }>();
       const known = new Set(existing.results.map((row) => row.number));
       const changes = [];
@@ -92,7 +94,7 @@ export async function POST(request: Request) {
       const id = Number((body.data as Record<string, unknown>)?.id);
       if (!id) return apiError(new Error("Vendedor inválido."), 400);
       await db.batch([
-        db.prepare("UPDATE raffle_numbers SET status='available',seller_id=NULL,buyer_name=NULL,buyer_phone=NULL,notes=NULL,price_cents=NULL,updated_at=? WHERE seller_id=?").bind(now, id),
+        db.prepare("UPDATE raffle_numbers SET status='available',seller_id=NULL,buyer_name=NULL,buyer_last_name=NULL,buyer_phone=NULL,buyer_email=NULL,notes=NULL,price_cents=NULL,updated_at=? WHERE seller_id=?").bind(now, id),
         db.prepare("DELETE FROM sellers WHERE id=?").bind(id),
       ]);
     } else if (action === "number") {
@@ -100,17 +102,17 @@ export async function POST(request: Request) {
       const number = Number(data.number);
       const status = ["available", "reserved", "sold"].includes(String(data.status)) ? String(data.status) : "available";
       if (status === "available") {
-        await db.prepare("UPDATE raffle_numbers SET status='available',seller_id=NULL,buyer_name=NULL,buyer_phone=NULL,notes=NULL,price_cents=NULL,updated_at=? WHERE number=?").bind(now, number).run();
+        await db.prepare("UPDATE raffle_numbers SET status='available',seller_id=NULL,buyer_name=NULL,buyer_last_name=NULL,buyer_phone=NULL,buyer_email=NULL,notes=NULL,price_cents=NULL,updated_at=? WHERE number=?").bind(now, number).run();
       } else {
-        await db.prepare("UPDATE raffle_numbers SET status=?,buyer_name=?,buyer_phone=?,updated_at=? WHERE number=?")
-          .bind(status, String(data.buyer_name ?? ""), String(data.buyer_phone ?? ""), now, number).run();
+        await db.prepare("UPDATE raffle_numbers SET status=?,buyer_name=?,buyer_last_name=?,buyer_phone=?,buyer_email=?,updated_at=? WHERE number=?")
+          .bind(status, String(data.buyer_name ?? ""), String(data.buyer_last_name ?? ""), String(data.buyer_phone ?? ""), String(data.buyer_email ?? ""), now, number).run();
       }
     } else if (action === "restore") {
       const data = body.data as { settings?: Record<string, unknown>; prizes?: Array<Record<string, unknown>> };
       if (!data?.settings || !Array.isArray(data.prizes)) return apiError(new Error("El archivo de respaldo no tiene el formato esperado."), 400);
       const s = data.settings;
-      await db.prepare("UPDATE raffle_settings SET title=?,school=?,price_cents=?,promo_pair_price_cents=?,number_count=?,draw_date=?,draw_name=?,official_url=?,result_number=?,whatsapp_text=?,admin_emails=?,updated_at=? WHERE id=1")
-        .bind(String(s.title), String(s.school), Number(s.price_cents), Number(s.promo_pair_price_cents) > 0 ? Number(s.promo_pair_price_cents) : null, Number(s.number_count), s.draw_date ? String(s.draw_date) : null, String(s.draw_name), String(s.official_url), s.result_number ? String(s.result_number) : null, String(s.whatsapp_text), String(s.admin_emails), now).run();
+      await db.prepare("UPDATE raffle_settings SET title=?,school=?,price_cents=?,promo_pair_price_cents=?,max_reserved_per_seller=?,number_count=?,draw_date=?,draw_name=?,official_url=?,result_number=?,whatsapp_text=?,admin_emails=?,updated_at=? WHERE id=1")
+        .bind(String(s.title), String(s.school), Number(s.price_cents), Number(s.promo_pair_price_cents) > 0 ? Number(s.promo_pair_price_cents) : null, Number(s.max_reserved_per_seller) > 0 ? Number(s.max_reserved_per_seller) : null, Number(s.number_count), s.draw_date ? String(s.draw_date) : null, String(s.draw_name), String(s.official_url), s.result_number ? String(s.result_number) : null, String(s.whatsapp_text), String(s.admin_emails), now).run();
       await db.prepare("DELETE FROM prizes").run();
       if (data.prizes.length) await db.batch(data.prizes.map((p, index) => db.prepare("INSERT INTO prizes (position,title,description,image_url) VALUES (?,?,?,?)").bind(Number(p.position) || index + 1, String(p.title), String(p.description ?? ""), String(p.image_url ?? ""))));
     } else if (action === "admin_pin") {
@@ -126,12 +128,12 @@ export async function POST(request: Request) {
       return Response.json({ ok: true, code });
     } else if (action === "reset") {
       const mode = String((body.data as Record<string, unknown>)?.mode ?? "sales");
-      await db.prepare("UPDATE raffle_numbers SET status='available',seller_id=NULL,buyer_name=NULL,buyer_phone=NULL,notes=NULL,price_cents=NULL,updated_at=?").bind(now).run();
+      await db.prepare("UPDATE raffle_numbers SET status='available',seller_id=NULL,buyer_name=NULL,buyer_last_name=NULL,buyer_phone=NULL,buyer_email=NULL,notes=NULL,price_cents=NULL,updated_at=?").bind(now).run();
       if (mode === "factory") {
         await db.batch([
           db.prepare("DELETE FROM sellers"),
           db.prepare("DELETE FROM prizes"),
-          db.prepare("UPDATE raffle_settings SET title='La gran rifa de 6.º',school='6.º grado',price_cents=300000,promo_pair_price_cents=NULL,number_count=100,draw_date=NULL,draw_name='Lotería de la Ciudad — Quiniela',official_url='https://www.loteriadelaciudad.gob.ar/',result_number=NULL,whatsapp_text='¡Gracias por colaborar con nuestra rifa!',admin_emails='',hero_title='Ayudanos a hacer algo enorme.',hero_intro='Cada número suma. Elegí el tuyo con una familia vendedora y guardá el comprobante para el sorteo.',logo_image_url='',hero_image_url='',font_family='Trebuchet MS',primary_color='#6d28d9',secondary_color='#ec4899',accent_color='#fbbf24',background_color='#fff8ed',text_color='#2e1557',updated_at=? WHERE id=1").bind(now),
+          db.prepare("UPDATE raffle_settings SET title='La gran rifa de 6.º',school='6.º grado',price_cents=300000,promo_pair_price_cents=NULL,max_reserved_per_seller=NULL,number_count=100,draw_date=NULL,draw_name='Lotería de la Ciudad — Quiniela',official_url='https://www.loteriadelaciudad.gob.ar/',result_number=NULL,whatsapp_text='¡Gracias por colaborar con nuestra rifa!',admin_emails='',hero_title='Ayudanos a hacer algo enorme.',hero_intro='Cada número suma. Elegí el tuyo con una familia vendedora y guardá el comprobante para el sorteo.',logo_image_url='',hero_image_url='',font_family='Trebuchet MS',primary_color='#6d28d9',secondary_color='#ec4899',accent_color='#fbbf24',background_color='#fff8ed',text_color='#2e1557',updated_at=? WHERE id=1").bind(now),
           db.prepare("UPDATE raffle_numbers SET active=CASE WHEN number<100 THEN 1 ELSE 0 END"),
         ]);
       }

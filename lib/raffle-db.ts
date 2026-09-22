@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 
 export type RaffleSettings = {
-  id: number; title: string; school: string; price_cents: number; promo_pair_price_cents: number | null; number_count: number;
+  id: number; title: string; school: string; price_cents: number; promo_pair_price_cents: number | null; max_reserved_per_seller: number | null; number_count: number;
   draw_date: string | null; draw_name: string; official_url: string; result_number: string | null;
   whatsapp_text: string; admin_emails: string; admin_pin_hash: string; admin_recovery_code_hash: string | null; updated_at: string;
   hero_title: string; hero_intro: string; logo_image_url: string; hero_image_url: string;
@@ -39,7 +39,7 @@ export async function ensureSeed() {
       db.prepare("INSERT INTO prizes (position,title,description,image_url) VALUES (1,?,?,?)").bind("Premio sorpresa", "Próximamente anunciaremos este premio.", ""),
       db.prepare("INSERT INTO prizes (position,title,description,image_url) VALUES (2,?,?,?)").bind("Segundo premio", "Otro motivo para elegir tu número favorito.", ""),
       db.prepare("INSERT INTO sellers (child_name,display_name,pin_hash,active,created_at) VALUES (?,?,?,?,?)")
-        .bind("Martina", "Familia de Martina", await sha256("1234"), 1, now),
+        .bind("Olivia", "Familia de Olivia", await sha256("1234"), 1, now),
       db.prepare("INSERT INTO audit_log (action,actor,payload,created_at) VALUES (?,?,?,?)")
         .bind("initial_setup", "system", JSON.stringify({ version: 1 }), now),
     ]);
@@ -76,7 +76,8 @@ export async function sellerFromCredentials(childName: string, pin: string) {
   const seller = await getD1().prepare("SELECT id,child_name,display_name,pin_hash,limit_mode,limit_from,limit_to,limit_count,must_change_pin FROM sellers WHERE lower(child_name)=lower(?) AND active=1")
     .bind(childName.trim()).first<{ id: number; child_name: string; display_name: string; pin_hash: string; limit_mode: "range" | "count"; limit_from: number | null; limit_to: number | null; limit_count: number; must_change_pin: number }>();
   if (!seller || seller.pin_hash !== (await sha256(pin))) return null;
-  return { id: seller.id, childName: seller.child_name, displayName: seller.display_name, limitMode: seller.limit_mode, limitFrom: seller.limit_from, limitTo: seller.limit_to, limitCount: seller.limit_count, mustChangePin: Boolean(seller.must_change_pin) };
+  const settings = await ensureSeed();
+  return { id: seller.id, childName: seller.child_name, displayName: seller.display_name, limitMode: seller.limit_mode, limitFrom: seller.limit_from, limitTo: seller.limit_to, limitCount: seller.limit_count, mustChangePin: Boolean(seller.must_change_pin), maxReservedPerSeller: settings.max_reserved_per_seller };
 }
 
 export async function isAdmin(request: Request) {
