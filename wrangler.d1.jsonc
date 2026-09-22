@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rifero-db",
+  "compatibility_date": "2026-09-22",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "site-creator-d1",
+      "database_id": "40cc60cd-3650-4e48-a791-4540511cb1fe",
+      "migrations_dir": "drizzle"
+    }
+  ]
+}
