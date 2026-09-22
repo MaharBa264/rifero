@@ -64,6 +64,13 @@
       "when": 1790100784300,
       "tag": "0008_serious_warbound",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1790101606067,
+      "tag": "0009_careful_blue_blade",
+      "breakpoints": true
     }
   ]
 }

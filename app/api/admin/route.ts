@@ -1,4 +1,11 @@
-import { apiError, ensureSeed, generateRecoveryCode, getD1, isAdmin, redactAuditPayload, sha256 } from "@/lib/raffle-db";
+import { z } from "zod";
+import { apiError, ensureSeed, generateRecoveryCode, getD1, sha256 } from "@/lib/raffle-db";
+import { hashSecret } from "@/lib/security";
+import { AuthRequiredError, requireAdminSession } from "@/lib/auth";
+import { createSession, revokeAllSessionsFor } from "@/lib/session";
+import { logAudit, redact } from "@/lib/audit";
+import { withIdempotency } from "@/lib/idempotency";
+import { newRequestId } from "@/lib/observability";
 
 const COLOR = /^#[0-9a-fA-F]{6}$/;
 const FONTS = new Set(["Trebuchet MS", "Arial", "Georgia", "Verdana", "Comic Sans MS"]);
@@ -6,19 +13,34 @@ function safeColor(value: unknown, fallback: string) { const color = String(valu
 function safeImageUrl(value: unknown) { const url = String(value ?? "").trim(); return !url || url.startsWith("https://") ? url : ""; }
 
 async function requireAdmin(request: Request) {
-  const admin = await isAdmin(request);
-  if (!admin.ok) throw new Error("ADMIN_REQUIRED");
-  return admin;
+  try { await requireAdminSession(request); }
+  catch { throw new Error("ADMIN_REQUIRED"); }
+  return { email: "administrador" };
 }
+
+const backupSettingsSchema = z.object({
+  title: z.string(), school: z.string(), price_cents: z.coerce.number(),
+  promo_pair_price_cents: z.coerce.number().nullable().optional(),
+  max_reserved_per_seller: z.coerce.number().nullable().optional(),
+  start_number: z.coerce.number().optional(),
+  number_count: z.coerce.number(), draw_date: z.string().nullable().optional(), draw_name: z.string(),
+  official_url: z.string(), result_number: z.string().nullable().optional(), whatsapp_text: z.string(), admin_emails: z.string(),
+});
+const backupSchema = z.object({
+  version: z.number().int().min(1).max(3),
+  settings: backupSettingsSchema,
+  prizes: z.array(z.object({ position: z.coerce.number().optional(), title: z.string(), description: z.string().optional(), image_url: z.string().optional() })),
+});
 
 export async function GET(request: Request) {
   try {
     await requireAdmin(request);
     const db = getD1();
     const settings = await ensureSeed();
+    const includeDeleted = new URL(request.url).searchParams.get("include_deleted") === "1";
     const [prizes, sellers, numbers, audit] = await Promise.all([
       db.prepare("SELECT * FROM prizes ORDER BY position,id").all(),
-      db.prepare("SELECT id,child_name,display_name,active,limit_mode,limit_from,limit_to,limit_count,created_at FROM sellers ORDER BY active DESC,child_name").all(),
+      db.prepare(`SELECT id,child_name,display_name,active,limit_mode,limit_from,limit_to,limit_count,deleted_at,created_at FROM sellers ${includeDeleted ? "" : "WHERE deleted_at IS NULL"} ORDER BY active DESC,child_name`).all(),
       db.prepare("SELECT n.*,s.child_name AS seller_name FROM raffle_numbers n LEFT JOIN sellers s ON s.id=n.seller_id WHERE n.active=1 ORDER BY n.number").all(),
       db.prepare("SELECT * FROM audit_log ORDER BY id DESC LIMIT 60").all(),
     ]);
@@ -31,8 +53,10 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const requestId = newRequestId();
   try {
     const admin = await requireAdmin(request);
+    return withIdempotency("admin_action", request.headers.get("idempotency-key"), async () => {
     const body = await request.json() as Record<string, unknown>;
     const action = String(body.action ?? "");
     const db = getD1();
@@ -84,21 +108,26 @@ export async function POST(request: Request) {
           .bind(String(data.child_name ?? "").trim(), String(data.display_name ?? "").trim(), data.active === false ? 0 : 1, mode, mode === "range" ? limitFrom : null, mode === "range" ? limitTo : null, limitCount, id).run();
         if (String(data.pin ?? "").trim()) {
           if (String(data.pin).trim().length < 4) return apiError(new Error("El PIN debe tener al menos 4 caracteres."), 400);
-          await db.prepare("UPDATE sellers SET pin_hash=?,must_change_pin=1 WHERE id=?").bind(await sha256(String(data.pin).trim()), id).run();
+          await db.prepare("UPDATE sellers SET pin_hash=?,must_change_pin=1 WHERE id=?").bind(await hashSecret(String(data.pin).trim()), id).run();
         }
       } else {
         const pin = String(data.pin ?? "").trim();
         if (pin.length < 4) return apiError(new Error("El PIN debe tener al menos 4 caracteres."), 400);
         await db.prepare("INSERT INTO sellers (child_name,display_name,pin_hash,active,limit_mode,limit_from,limit_to,limit_count,must_change_pin,created_at) VALUES (?,?,?,?,?,?,?,?,1,?)")
-          .bind(String(data.child_name ?? "").trim(), String(data.display_name ?? "").trim(), await sha256(pin), 1, mode, mode === "range" ? limitFrom : null, mode === "range" ? limitTo : null, limitCount, now).run();
+          .bind(String(data.child_name ?? "").trim(), String(data.display_name ?? "").trim(), await hashSecret(pin), 1, mode, mode === "range" ? limitFrom : null, mode === "range" ? limitTo : null, limitCount, now).run();
       }
     } else if (action === "delete_seller") {
       const id = Number((body.data as Record<string, unknown>)?.id);
       if (!id) return apiError(new Error("Vendedor inválido."), 400);
+      // Soft delete: the seller row and their historical sales are preserved; only future access is cut off.
       await db.batch([
-        db.prepare("UPDATE raffle_numbers SET status='available',seller_id=NULL,buyer_name=NULL,buyer_last_name=NULL,buyer_phone=NULL,buyer_email=NULL,notes=NULL,price_cents=NULL,updated_at=? WHERE seller_id=?").bind(now, id),
-        db.prepare("DELETE FROM sellers WHERE id=?").bind(id),
+        db.prepare("UPDATE raffle_numbers SET status='available',seller_id=NULL,buyer_name=NULL,buyer_last_name=NULL,buyer_phone=NULL,buyer_email=NULL,notes=NULL,price_cents=NULL,updated_at=? WHERE seller_id=? AND status!='sold'").bind(now, id),
+        db.prepare("UPDATE sellers SET active=0,deleted_at=? WHERE id=?").bind(now, id),
       ]);
+    } else if (action === "restore_seller") {
+      const id = Number((body.data as Record<string, unknown>)?.id);
+      if (!id) return apiError(new Error("Vendedor inválido."), 400);
+      await db.prepare("UPDATE sellers SET deleted_at=NULL WHERE id=?").bind(id).run();
     } else if (action === "number") {
       const data = body.data as Record<string, unknown>;
       const number = Number(data.number);
@@ -110,23 +139,30 @@ export async function POST(request: Request) {
           .bind(status, String(data.buyer_name ?? ""), String(data.buyer_last_name ?? ""), String(data.buyer_phone ?? ""), String(data.buyer_email ?? ""), now, number).run();
       }
     } else if (action === "restore") {
-      const data = body.data as { settings?: Record<string, unknown>; prizes?: Array<Record<string, unknown>> };
-      if (!data?.settings || !Array.isArray(data.prizes)) return apiError(new Error("El archivo de respaldo no tiene el formato esperado."), 400);
-      const s = data.settings;
-      await db.prepare("UPDATE raffle_settings SET title=?,school=?,price_cents=?,promo_pair_price_cents=?,max_reserved_per_seller=?,start_number=?,number_count=?,draw_date=?,draw_name=?,official_url=?,result_number=?,whatsapp_text=?,admin_emails=?,updated_at=? WHERE id=1")
-        .bind(String(s.title), String(s.school), Number(s.price_cents), Number(s.promo_pair_price_cents) > 0 ? Number(s.promo_pair_price_cents) : null, Number(s.max_reserved_per_seller) > 0 ? Number(s.max_reserved_per_seller) : null, Math.max(0, Number(s.start_number) || 0), Number(s.number_count), s.draw_date ? String(s.draw_date) : null, String(s.draw_name), String(s.official_url), s.result_number ? String(s.result_number) : null, String(s.whatsapp_text), String(s.admin_emails), now).run();
-      await db.prepare("DELETE FROM prizes").run();
-      if (data.prizes.length) await db.batch(data.prizes.map((p, index) => db.prepare("INSERT INTO prizes (position,title,description,image_url) VALUES (?,?,?,?)").bind(Number(p.position) || index + 1, String(p.title), String(p.description ?? ""), String(p.image_url ?? ""))));
+      const parsed = backupSchema.safeParse(body.data);
+      if (!parsed.success) return apiError(new Error("El archivo de respaldo no tiene el formato esperado."), 400);
+      const s = parsed.data.settings;
+      await db.batch([
+        db.prepare("UPDATE raffle_settings SET title=?,school=?,price_cents=?,promo_pair_price_cents=?,max_reserved_per_seller=?,start_number=?,number_count=?,draw_date=?,draw_name=?,official_url=?,result_number=?,whatsapp_text=?,admin_emails=?,updated_at=? WHERE id=1")
+          .bind(s.title, s.school, s.price_cents, s.promo_pair_price_cents && s.promo_pair_price_cents > 0 ? s.promo_pair_price_cents : null, s.max_reserved_per_seller && s.max_reserved_per_seller > 0 ? s.max_reserved_per_seller : null, Math.max(0, s.start_number ?? 0), s.number_count, s.draw_date ?? null, s.draw_name, s.official_url, s.result_number ?? null, s.whatsapp_text, s.admin_emails, now),
+        db.prepare("DELETE FROM prizes"),
+        ...parsed.data.prizes.map((p, index) => db.prepare("INSERT INTO prizes (position,title,description,image_url) VALUES (?,?,?,?)").bind(p.position || index + 1, p.title, p.description ?? "", p.image_url ?? "")),
+      ]);
     } else if (action === "admin_pin") {
       const data = body.data as Record<string, unknown>;
       const newPin = String(data.new_admin_pin ?? "").trim();
       if (newPin.length < 8) return apiError(new Error("La clave administradora debe tener al menos 8 caracteres."), 400);
-      await db.prepare("UPDATE raffle_settings SET admin_pin_hash=? WHERE id=1").bind(await sha256(newPin)).run();
+      await db.prepare("UPDATE raffle_settings SET admin_pin_hash=? WHERE id=1").bind(await hashSecret(newPin)).run();
+      await revokeAllSessionsFor("admin", null);
+      const { cookie } = await createSession("admin", null, request);
+      await logAudit(db, { action: "admin_admin_pin", actorLabel: admin.email, actorType: "admin", entityType: "raffle_settings", requestId });
+      const response = Response.json({ ok: true });
+      response.headers.set("set-cookie", cookie);
+      return response;
     } else if (action === "generate_recovery_code") {
       const code = generateRecoveryCode();
       await db.prepare("UPDATE raffle_settings SET admin_recovery_code_hash=? WHERE id=1").bind(await sha256(code)).run();
-      await db.prepare("INSERT INTO audit_log (action,actor,payload,created_at) VALUES (?,?,?,?)")
-        .bind("admin_generate_recovery_code", admin.email, JSON.stringify({}), now).run();
+      await logAudit(db, { action: "admin_generate_recovery_code", actorLabel: admin.email, actorType: "admin", entityType: "admin", requestId });
       return Response.json({ ok: true, code });
     } else if (action === "reset") {
       const mode = String((body.data as Record<string, unknown>)?.mode ?? "sales");
@@ -143,11 +179,11 @@ export async function POST(request: Request) {
       return apiError(new Error("Acción no reconocida."), 400);
     }
 
-    await db.prepare("INSERT INTO audit_log (action,actor,payload,created_at) VALUES (?,?,?,?)")
-      .bind(`admin_${action}`, admin.email, JSON.stringify(redactAuditPayload(body.data ?? {})), now).run();
+    await logAudit(db, { action: `admin_${action}`, actorLabel: admin.email, actorType: "admin", entityType: "raffle_settings", payload: redact(body.data ?? {}), requestId });
     return Response.json({ ok: true });
+    });
   } catch (error) {
-    if (error instanceof Error && error.message === "ADMIN_REQUIRED") return apiError(new Error("Necesitás ingresar como administrador."), 403);
+    if (error instanceof AuthRequiredError || (error instanceof Error && error.message === "ADMIN_REQUIRED")) return apiError(new Error("Necesitás ingresar como administrador."), 403);
     return apiError(error);
   }
 }

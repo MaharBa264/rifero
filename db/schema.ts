@@ -41,6 +41,7 @@ export const sellers = sqliteTable("sellers", {
   limitTo: integer("limit_to"),
   limitCount: integer("limit_count").notNull().default(15),
   mustChangePin: integer("must_change_pin", { mode: "boolean" }).notNull().default(true),
+  deletedAt: text("deleted_at"),
   createdAt: text("created_at").notNull(),
 });
 
@@ -74,5 +75,46 @@ export const auditLog = sqliteTable("audit_log", {
   action: text("action").notNull(),
   actor: text("actor").notNull(),
   payload: text("payload").notNull(),
+  actorType: text("actor_type"),
+  actorId: text("actor_id"),
+  entityType: text("entity_type"),
+  entityId: text("entity_id"),
+  beforeJson: text("before_json"),
+  afterJson: text("after_json"),
+  requestId: text("request_id"),
+  createdAt: text("created_at").notNull(),
+});
+
+export const sessions = sqliteTable("sessions", {
+  tokenHash: text("token_hash").primaryKey(),
+  subjectType: text("subject_type", { enum: ["admin", "seller"] }).notNull(),
+  subjectId: integer("subject_id"),
+  createdAt: text("created_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull(),
+  revokedAt: text("revoked_at"),
+  userAgent: text("user_agent"),
+  ip: text("ip"),
+}, (table) => [
+  index("idx_sessions_subject").on(table.subjectType, table.subjectId),
+  index("idx_sessions_expires").on(table.expiresAt),
+]);
+
+export const loginAttempts = sqliteTable("login_attempts", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  identity: text("identity").notNull(),
+  ip: text("ip").notNull(),
+  success: integer("success", { mode: "boolean" }).notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [
+  index("idx_login_attempts_identity").on(table.identity, table.createdAt),
+  index("idx_login_attempts_ip").on(table.ip, table.createdAt),
+]);
+
+export const idempotencyKeys = sqliteTable("idempotency_keys", {
+  idKey: text("id_key").primaryKey(),
+  scope: text("scope").notNull(),
+  statusCode: integer("status_code").notNull(),
+  responseJson: text("response_json").notNull(),
   createdAt: text("created_at").notNull(),
 });

@@ -1,6 +1,11 @@
 import { apiError, getPublicData } from "@/lib/raffle-db";
+import { newRequestId } from "@/lib/observability";
 
 export async function GET() {
-  try { return Response.json(await getPublicData()); }
-  catch (error) { return apiError(error); }
+  const requestId = newRequestId();
+  try {
+    const response = Response.json(await getPublicData());
+    response.headers.set("x-request-id", requestId);
+    return response;
+  } catch (error) { return apiError(error); }
 }

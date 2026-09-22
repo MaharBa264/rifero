@@ -1,4 +1,8 @@
 import { env } from "cloudflare:workers";
+import { hashSecret, sha256, verifySecret } from "@/lib/security";
+import { logEvent } from "@/lib/observability";
+
+export { sha256 };
 
 export type RaffleSettings = {
   id: number; title: string; school: string; price_cents: number; promo_pair_price_cents: number | null; max_reserved_per_seller: number | null; start_number: number; number_count: number;
@@ -9,23 +13,9 @@ export type RaffleSettings = {
   background_color: string; text_color: string;
 };
 
-const SENSITIVE_AUDIT_KEYS = new Set(["new_admin_pin", "pin", "new_recovery_code", "recovery_code", "code"]);
-export function redactAuditPayload(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactAuditPayload);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, v]) => [key, SENSITIVE_AUDIT_KEYS.has(key) ? "[oculto]" : redactAuditPayload(v)]));
-  }
-  return value;
-}
-
 export function getD1() {
   if (!env.DB) throw new Error("La base de datos no está disponible.");
   return env.DB;
-}
-
-export async function sha256(value: string) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export async function ensureSeed() {
@@ -35,11 +25,11 @@ export async function ensureSeed() {
   if (!settings) {
     await db.batch([
       db.prepare("INSERT INTO raffle_settings (id,title,school,price_cents,number_count,draw_date,draw_name,official_url,result_number,whatsapp_text,admin_emails,admin_pin_hash,updated_at) VALUES (1,?,?,?,?,?,?,?,?,?,?,?,?)")
-        .bind("La gran rifa de 6.º", "6.º grado", 300000, 100, null, "Lotería de la Ciudad — Quiniela", "https://www.loteriadelaciudad.gob.ar/", null, "¡Gracias por colaborar con nuestra rifa!", "", await sha256("admin1234"), now),
+        .bind("La gran rifa de 6.º", "6.º grado", 300000, 100, null, "Lotería de la Ciudad — Quiniela", "https://www.loteriadelaciudad.gob.ar/", null, "¡Gracias por colaborar con nuestra rifa!", "", await hashSecret("admin1234"), now),
       db.prepare("INSERT INTO prizes (position,title,description,image_url) VALUES (1,?,?,?)").bind("Premio sorpresa", "Próximamente anunciaremos este premio.", ""),
       db.prepare("INSERT INTO prizes (position,title,description,image_url) VALUES (2,?,?,?)").bind("Segundo premio", "Otro motivo para elegir tu número favorito.", ""),
       db.prepare("INSERT INTO sellers (child_name,display_name,pin_hash,active,created_at) VALUES (?,?,?,?,?)")
-        .bind("Olivia", "Familia de Olivia", await sha256("1234"), 1, now),
+        .bind("Olivia", "Familia de Olivia", await hashSecret("1234"), 1, now),
       db.prepare("INSERT INTO audit_log (action,actor,payload,created_at) VALUES (?,?,?,?)")
         .bind("initial_setup", "system", JSON.stringify({ version: 1 }), now),
     ]);
@@ -47,7 +37,7 @@ export async function ensureSeed() {
   const current = settings ?? (await db.prepare("SELECT * FROM raffle_settings WHERE id = 1").first<RaffleSettings>());
   if (!current) throw new Error("No se pudo iniciar la rifa.");
   if (!current.admin_pin_hash) {
-    current.admin_pin_hash = await sha256("admin1234");
+    current.admin_pin_hash = await hashSecret("admin1234");
     await db.prepare("UPDATE raffle_settings SET admin_pin_hash=? WHERE id=1").bind(current.admin_pin_hash).run();
   }
   const count = await db.prepare("SELECT COUNT(*) AS total FROM raffle_numbers").first<{ total: number }>();
@@ -66,24 +56,50 @@ export async function getPublicData() {
   const [prizes, numbers, sellerCount] = await Promise.all([
     db.prepare("SELECT id,position,title,description,image_url FROM prizes ORDER BY position,id").all(),
     db.prepare("SELECT number,status FROM raffle_numbers WHERE active = 1 ORDER BY number").all(),
-    db.prepare("SELECT COUNT(*) AS total FROM sellers WHERE active = 1").first<{ total: number }>(),
+    db.prepare("SELECT COUNT(*) AS total FROM sellers WHERE active = 1 AND deleted_at IS NULL").first<{ total: number }>(),
   ]);
   const { admin_emails: _emails, admin_pin_hash: _pin, admin_recovery_code_hash: _recovery, ...publicSettings } = settings;
   return { settings: publicSettings, prizes: prizes.results, numbers: numbers.results, sellerCount: sellerCount?.total ?? 0 };
 }
 
-export async function sellerFromCredentials(childName: string, pin: string) {
-  const seller = await getD1().prepare("SELECT id,child_name,display_name,pin_hash,limit_mode,limit_from,limit_to,limit_count,must_change_pin FROM sellers WHERE lower(child_name)=lower(?) AND active=1")
-    .bind(childName.trim()).first<{ id: number; child_name: string; display_name: string; pin_hash: string; limit_mode: "range" | "count"; limit_from: number | null; limit_to: number | null; limit_count: number; must_change_pin: number }>();
-  if (!seller || seller.pin_hash !== (await sha256(pin))) return null;
-  const settings = await ensureSeed();
-  return { id: seller.id, childName: seller.child_name, displayName: seller.display_name, limitMode: seller.limit_mode, limitFrom: seller.limit_from, limitTo: seller.limit_to, limitCount: seller.limit_count, mustChangePin: Boolean(seller.must_change_pin), maxReservedPerSeller: settings.max_reserved_per_seller };
+export type SellerRow = { id: number; child_name: string; display_name: string; pin_hash: string; limit_mode: "range" | "count"; limit_from: number | null; limit_to: number | null; limit_count: number; must_change_pin: number };
+export type SellerSession = { id: number; childName: string; displayName: string; limitMode: "range" | "count"; limitFrom: number | null; limitTo: number | null; limitCount: number; mustChangePin: boolean; maxReservedPerSeller: number | null };
+
+function toSellerSession(seller: SellerRow, maxReservedPerSeller: number | null): SellerSession {
+  return { id: seller.id, childName: seller.child_name, displayName: seller.display_name, limitMode: seller.limit_mode, limitFrom: seller.limit_from, limitTo: seller.limit_to, limitCount: seller.limit_count, mustChangePin: Boolean(seller.must_change_pin), maxReservedPerSeller };
 }
 
-export async function isAdmin(request: Request) {
+/** Verifies (childName, pin) — used only by the login endpoint. Transparently rehashes legacy SHA-256 rows to the PBKDF2 scheme on a successful match. */
+export async function sellerFromCredentials(childName: string, pin: string): Promise<SellerSession | null> {
+  const db = getD1();
+  const seller = await db.prepare("SELECT id,child_name,display_name,pin_hash,limit_mode,limit_from,limit_to,limit_count,must_change_pin FROM sellers WHERE lower(child_name)=lower(?) AND active=1 AND deleted_at IS NULL")
+    .bind(childName.trim()).first<SellerRow>();
+  if (!seller) return null;
+  const { ok, needsRehash } = await verifySecret(pin, seller.pin_hash);
+  if (!ok) return null;
+  if (needsRehash) await db.prepare("UPDATE sellers SET pin_hash=? WHERE id=?").bind(await hashSecret(pin), seller.id).run();
   const settings = await ensureSeed();
-  const key = request.headers.get("x-rifa-admin-key") ?? "";
-  return { ok: Boolean(key && (await sha256(key)) === settings.admin_pin_hash), email: "administrador" };
+  return toSellerSession(seller, settings.max_reserved_per_seller);
+}
+
+/** Loads a seller for an already-authenticated session (no PIN check). */
+export async function getSellerSession(id: number): Promise<SellerSession | null> {
+  const db = getD1();
+  const seller = await db.prepare("SELECT id,child_name,display_name,pin_hash,limit_mode,limit_from,limit_to,limit_count,must_change_pin FROM sellers WHERE id=? AND active=1 AND deleted_at IS NULL")
+    .bind(id).first<SellerRow>();
+  if (!seller) return null;
+  const settings = await ensureSeed();
+  return toSellerSession(seller, settings.max_reserved_per_seller);
+}
+
+/** Verifies the admin PIN — used only by the admin login and recovery endpoints. Rehashes legacy hashes on success. */
+export async function verifyAdminPin(pin: string): Promise<boolean> {
+  const db = getD1();
+  const settings = await ensureSeed();
+  const { ok, needsRehash } = await verifySecret(pin, settings.admin_pin_hash);
+  if (!ok) return false;
+  if (needsRehash) await db.prepare("UPDATE raffle_settings SET admin_pin_hash=? WHERE id=1").bind(await hashSecret(pin)).run();
+  return true;
 }
 
 const RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -99,5 +115,6 @@ export function priceForSale(settings: RaffleSettings, count: number) {
 }
 
 export function apiError(error: unknown, status = 500) {
+  if (status >= 500) logEvent("error", "api_error", { status, error: error instanceof Error ? error.message : String(error) });
   return Response.json({ error: error instanceof Error ? error.message : "Ocurrió un error inesperado." }, { status });
 }
